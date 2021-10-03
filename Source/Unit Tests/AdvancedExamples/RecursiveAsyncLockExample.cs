@@ -233,5 +233,64 @@ namespace Tests
                 Assert.IsFalse(AsyncLockTracker.Contains(mutex));
             }
         }
+
+        [TestMethod]
+        public void RecursiveAsyncLock_DoesPermitIndependentWaits_WhenUsedInSyncContext()
+        {
+            var mutex = new RecursiveAsyncLock();
+
+            // acquire lock in sync method
+            LockSync(mutex);
+
+            // then anyone would be able to acquire the lock again
+            var thread = new Thread(() => LockAsync(mutex).GetAwaiter().GetResult());
+            thread.Start();
+            thread.Join();
+        }
+
+        [TestMethod]
+        public async Task RecursiveAsyncLock_DoesPermitMultipleThreads_AtTheSameTime()
+        {
+            var mutex = new RecursiveAsyncLock();
+
+            await PerformActionUnderLock(
+                mutex,
+                actionUnderLock: () =>
+                {
+                    var waitForEverybody = new TaskCompletionSource();
+
+                    // multi-threaded access to the lock; thread safety is not guarantied by this lock.
+                    var thread1 = new Thread(() => PerformActionUnderLock(mutex, () => waitForEverybody.Task).GetAwaiter().GetResult());
+                    var thread2 = new Thread(() => PerformActionUnderLock(mutex, () => waitForEverybody.Task).GetAwaiter().GetResult());
+
+                    thread1.Start();
+                    thread2.Start();
+
+                    Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ => waitForEverybody.SetResult());
+
+                    thread1.Join();
+                    thread2.Join();
+
+                    return waitForEverybody.Task;
+                });
+        }
+
+        private static IDisposable LockSync(RecursiveAsyncLock mutex)
+        {
+            return mutex.LockAsync().GetAwaiter().GetResult();
+        }
+
+        private static async Task<IDisposable> LockAsync(RecursiveAsyncLock mutex)
+        {
+            return await mutex.LockAsync();
+        }
+
+        private static async Task PerformActionUnderLock(RecursiveAsyncLock mutex, Func<Task> actionUnderLock)
+        {
+            using (await mutex.LockAsync())
+            {
+                await actionUnderLock();
+            }
+        }
     }
 }
